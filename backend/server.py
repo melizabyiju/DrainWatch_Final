@@ -751,6 +751,17 @@ def analyze_image():
             red_dominance = np.mean((r > g + 40) & (r > b + 40)) > 0.40
             magenta_dominance = np.mean((r > g + 40) & (b > g + 30)) > 0.35
 
+            # --- Document / Screenshot detectors ---
+            # Real outdoor canal photos virtually never have >50% bright-white pixels.
+            # Documents, diagrams, flowcharts, tables, charts and screenshots do.
+            near_white = float(np.mean((r >= 225) & (g >= 225) & (b >= 225)))
+            near_dark  = float(np.mean((r <= 40)  & (g <= 40)  & (b <= 40)))
+
+            # White-background document / chart / diagram: >48% near-white pixels
+            is_document_bg = near_white > 0.48
+            # Dark-background code editor / terminal: mostly dark but also has white text
+            is_dark_screenshot = (near_dark > 0.25) and (near_white > 0.08)
+
             aquatic_pixels = (
                 ((b >= r - 15) & (b >= 30)) |
                 ((g >= r - 15) & (g >= 30)) |
@@ -758,7 +769,7 @@ def analyze_image():
             )
             aquatic_ratio = float(np.mean(aquatic_pixels))
 
-            if is_plain_surface or red_dominance or magenta_dominance or aquatic_ratio < 0.28:
+            if is_document_bg or is_dark_screenshot or is_plain_surface or red_dominance or magenta_dominance or aquatic_ratio < 0.28:
                 # Image does not contain identifiable canal/drain water features
                 category = "Non-Water Body / Unrelated Image"
                 confidence = 0.88
