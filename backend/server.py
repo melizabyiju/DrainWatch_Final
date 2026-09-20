@@ -741,44 +741,74 @@ def analyze_image():
 
     if AI_MODEL_AVAILABLE and save_path and os.path.exists(save_path):
         try:
-            img = Image.open(save_path).convert('RGB').resize((224, 224))
-            img_array = np.array(img, dtype=np.float32) / 255.0
-            img_array = np.expand_dims(img_array, axis=0)
+            raw_img = Image.open(save_path).convert('RGB')
+            # 1. Verification of water body / canal features
+            img_chk = raw_img.resize((150, 150))
+            arr_chk = np.array(img_chk, dtype=np.float32)
+            r, g, b = arr_chk[:, :, 0], arr_chk[:, :, 1], arr_chk[:, :, 2]
 
-            if tflite_interpreter is not None:
-                tflite_interpreter.set_tensor(tflite_input_details[0]['index'], img_array)
-                tflite_interpreter.invoke()
-                preds = tflite_interpreter.get_tensor(tflite_output_details[0]['index'])
-            elif model is not None:
-                preds = model.predict(img_array)
+            is_plain_surface = arr_chk.std() < 16.0
+            red_dominance = np.mean((r > g + 40) & (r > b + 40)) > 0.40
+            magenta_dominance = np.mean((r > g + 40) & (b > g + 30)) > 0.35
+
+            aquatic_pixels = (
+                ((b >= r - 15) & (b >= 30)) |
+                ((g >= r - 15) & (g >= 30)) |
+                ((np.abs(r - g) < 35) & (np.abs(g - b) < 35) & (b > 25) & (b < 220))
+            )
+            aquatic_ratio = float(np.mean(aquatic_pixels))
+
+            if is_plain_surface or red_dominance or magenta_dominance or aquatic_ratio < 0.28:
+                # Image does not contain identifiable canal/drain water features
+                category = "Non-Water Body / Unrelated Image"
+                confidence = 0.88
+                suggested_severity = "MINOR"
+                detected_blockage = "SILT_ACCUMULATION"
             else:
-                preds = None
+                img = raw_img.resize((224, 224))
+                img_array = np.array(img, dtype=np.float32) / 255.0
+                img_array = np.expand_dims(img_array, axis=0)
 
-            if preds is not None:
-                pred_idx = int(np.argmax(preds, axis=1)[0])
-                confidence = float(np.max(preds))
-
-                # Trained CNN labels: index 0: Clean / Clear Water, index 1: Polluted / Choked Drain
-                if pred_idx == 0:
-                    category = "Clean Water / Unobstructed"
-                    suggested_severity = "MINOR"
-                    detected_blockage = "SILT_ACCUMULATION"
+                if tflite_interpreter is not None:
+                    tflite_interpreter.set_tensor(tflite_input_details[0]['index'], img_array)
+                    tflite_interpreter.invoke()
+                    preds = tflite_interpreter.get_tensor(tflite_output_details[0]['index'])
+                elif model is not None:
+                    preds = model.predict(img_array)
                 else:
-                    category = "Polluted / Choked Canal"
-                    suggested_severity = "HIGH" if confidence > 0.8 else "MODERATE"
-                    detected_blockage = "PLASTIC_SOLID_WASTE"
+                    preds = None
+
+                if preds is not None:
+                    pred_idx = int(np.argmax(preds, axis=1)[0])
+                    confidence = float(np.max(preds))
+
+                    # Trained CNN labels: index 0: Clean / Clear Water, index 1: Polluted / Choked Drain
+                    if pred_idx == 0:
+                        category = "Clean Water / Unobstructed"
+                        suggested_severity = "MINOR"
+                        detected_blockage = "SILT_ACCUMULATION"
+                    else:
+                        category = "Polluted / Choked Canal"
+                        suggested_severity = "HIGH" if confidence > 0.8 else "MODERATE"
+                        detected_blockage = "PLASTIC_SOLID_WASTE"
         except Exception as e:
             print(f"[AI MODEL ERROR] {e}")
+
+    is_polluted = "Polluted" in category or "Choked" in category
+    if "Non-Water Body" in category:
+        ai_remarks = "Image does not appear to show a canal, drain, or water body. Verified with low blockage priority."
+    else:
+        ai_remarks = f"CNN Computer Vision analysis confirmed {category} with {round(confidence * 100, 1)}% confidence score."
 
     return jsonify({
         "status": "SUCCESS",
         "category": category,
-        "is_choked_or_polluted": "Polluted" in category or "Choked" in category,
+        "is_choked_or_polluted": is_polluted,
         "confidence_percentage": round(confidence * 100, 1),
         "suggested_severity": suggested_severity,
         "suggested_blockage_type": detected_blockage,
         "civic_points_awarded": 10,
-        "ai_remarks": f"CNN Computer Vision analysis confirmed {category} with {round(confidence * 100, 1)}% confidence score."
+        "ai_remarks": ai_remarks
     })
 
 @app.route('/api/upload', methods=['POST'])
